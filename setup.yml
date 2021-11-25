@@ -1,0 +1,120 @@
+- hosts: all # You can also specify an IP address
+  become: true
+  remote_user: "{{remote_user}}"
+  tasks:
+    - name: Enable PHP & Nginx on Amazon linux extras
+      shell: "amazon-linux-extras enable {{ item }}"
+      loop: "{{ amazon_linux_extras_packages }}"
+
+
+    # Install Packages
+    - name: Update yum
+      yum: update_cache=yes
+
+    - name: Install required system packages
+      yum: name={{ sys_packages }} state=latest
+
+    - name: Install PHP Packages
+      yum: name={{ item }} update_cache=yes state=latest
+      loop: "{{ php_packages }}"
+    
+    - name: Install nginx web server
+      yum: name=nginx state=installed update_cache=true
+      notify:
+        - Restart Nginx
+
+    # Nginx Configuration
+    - name: Make Nginx sites dir
+      block:
+      - name: Check nginx directory.
+        stat:
+          path: /etc/nginx/sites-available
+        register: available_dir
+      - name: Check nginx directory.
+        stat:
+          path: /etc/nginx/sites-enabled
+        register: enabled_dir
+      - name: "Create available directory if not exists"
+        file:
+          path: /etc/nginx/sites-available
+          state: directory
+          mode: 0755
+          group: root
+          owner: root
+        when: available_dir.stat.exists == false
+      - name: "Create enabled directory if not exists"
+        file:
+          path: /etc/nginx/sites-enabled
+          state: directory
+          mode: 0755
+          group: root
+          owner: root
+        when: enabled_dir.stat.exists == false
+
+    - name: Sets Nginx conf file
+      template:
+        src: "nginx.conf.j2"
+        dest: "/etc/nginx/sites-available/{{ http_conf }}"
+
+    - name: Enables new site
+      file:
+        src: "/etc/nginx/sites-available/{{ http_conf }}"
+        dest: "/etc/nginx/sites-enabled/{{ http_conf }}"
+        state: link
+      notify: Reload Nginx
+
+    - name: Removes "default" site
+      file:
+        path: "/etc/nginx/sites-enabled/default"
+        state: absent
+      notify: Reload Nginx
+
+    - name: Checks if Composer is already installed
+      command: "{{ composer_path }}"
+      ignore_errors: true
+      register: composer_installed
+    - name: Install Composer if its not already installed
+      block:
+        - name: Download Composer Installation Script (if not already installed)
+          get_url:
+            url: https://getcomposer.org/installer
+            dest: /tmp/composer-setup.php
+
+        - name: Run Composer Installer (if not already installed)
+          command:
+            cmd: /usr/bin/php /tmp/composer-setup.php
+            creates: composer.phar
+
+        - name: Copy Composer Executable to /usr/local/bin
+          become: true
+          copy:
+            src: composer.phar
+            dest: /usr/local/bin/composer
+            remote_src: yes
+            mode: '0755'
+
+        - name: Remove phar
+          file:
+            path: composer.phar
+            state: absent
+
+        - name: Remove Install Script
+          file:
+            path: /tmp/composer-setup.php
+            state: absent
+
+      when: composer_installed is failed
+
+  handlers:
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+    - name: Restart PHP-FPM
+      service:
+        name: php-fpm
+        state: restarted
